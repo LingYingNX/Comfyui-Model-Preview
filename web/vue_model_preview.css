@@ -1,0 +1,209 @@
+.cvmp-category-source {
+  display: none !important;
+}
+
+.cvmp-tree {
+  width: min(320px, calc(100vw - 24px));
+  max-height: 14rem;
+  padding: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: var(--fg-color, #e5eaf0);
+  scrollbar-color: rgb(255 255 255 / 18%) transparent;
+  scrollbar-width: thin;
+}
+
+.cvmp-category-group + .cvmp-category-group {
+  border-top: 1px solid rgb(255 255 255 / 8%);
+}
+
+.cvmp-category {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 29px;
+  padding: 4px 6px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: grab;
+  user-select: none;
+}
+
+.cvmp-category:hover {
+  background: rgb(255 255 255 / 6%);
+}
+
+.cvmp-category:active {
+  cursor: grabbing;
+}
+
+.cvmp-category.is-dragging {
+  opacity: 0.45;
+}
+
+.cvmp-category.is-drop-before::before,
+.cvmp-category.is-drop-after::after {
+  position: absolute;
+  right: 4px;
+  left: 4px;
+  height: 2px;
+  content: "";
+  background: var(--primary-background, #4b9fff);
+  border-radius: 2px;
+}
+
+.cvmp-category.is-drop-before::before {
+  top: -2px;
+}
+
+.cvmp-category.is-drop-after::after {
+  bottom: -2px;
+}
+
+.cvmp-category-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--muted-foreground, #aeb5bf);
+  font-size: 14px;
+  transition: transform 80ms ease;
+}
+
+.cvmp-category[aria-expanded="true"] .cvmp-category-arrow {
+  transform: rotate(90deg);
+}
+
+.cvmp-category-label {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cvmp-category-count {
+  min-width: 20px;
+  padding: 0 4px;
+  color: var(--muted-foreground, #aeb5bf);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: right;
+}
+
+.cvmp-category[data-selected="true"] .cvmp-category-label {
+  color: var(--primary-foreground, #fff);
+}
+
+.cvmp-category-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 1px 0 4px 18px;
+}
+
+.cvmp-model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 27px;
+  padding: 4px 7px;
+  overflow: hidden;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.cvmp-model-item:hover,
+.cvmp-model-item[data-highlighted="true"] {
+  background: var(--secondary-background, rgb(255 255 255 / 7%));
+}
+
+.cvmp-model-item[data-selected="true"] {
+  background: color-mix(in srgb, var(--primary-background, #4b9fff) 18%, transparent);
+}
+
+.cvmp-model-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 17px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cvmp-model-check {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--fg-color, #e5eaf0);
+}
+
+.cvmp-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 14px;
+}
+
+.cvmp-card {
+  position: fixed;
+  z-index: 10000;
+  width: 240px;
+  max-width: calc(100vw - 16px);
+  padding: 6px;
+  overflow: hidden;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  background: #18191c;
+  border: 1px solid #3a3d43;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgb(0 0 0 / 45%);
+  transition: opacity 60ms ease;
+}
+
+.cvmp-card[data-visible="true"] {
+  visibility: visible;
+  opacity: 1;
+}
+
+.cvmp-image {
+  display: block;
+  width: 100%;
+  max-height: min(360px, 65vh);
+  object-fit: contain;
+  background: #101113;
+  border-radius: 6px;
+}
+
+.cvmp-caption {
+  padding: 6px 2px 1px;
+  overflow: hidden;
+  color: #ececef;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cvmp-card {
+    transition: none;
+  }
+}

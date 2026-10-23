@@ -1,0 +1,12 @@
+[project]
+name = "comfyui-model-preview"
+version = "1.0.0"
+description = "Hover thumbnails and folder categories for ComfyUI model selectors."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["comfyui", "comfyui-custom-node", "model-preview", "thumbnail"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: JavaScript",
+]
