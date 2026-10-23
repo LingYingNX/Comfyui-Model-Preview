@@ -2,7 +2,8 @@
 
 ComfyUI 模型下拉框缩略图预览插件，版本 `1.0.0`。
 
-<img width="630" height="480" alt="QQ20261023-222431-HD" src="https://github.com/user-attachments/assets/0a3de771-fb87-43d7-89d8-b7f4a969c607" />
+<img width="760" height="538" alt="QQ20261023-223036-HD" src="https://github.com/user-attachments/assets/2e57d769-bc99-4c17-bef7-f64f6cfb1a7c" />
+
 
 毫秒级加载（用过以前类似的，卡手生涩），你在Windows右键弹出子菜单速度有多快它就有多快（comfyui右键菜单还要手动点击一下才弹出来真是见鬼的设计）
 
