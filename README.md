@@ -1,6 +1,11 @@
 # ComfyUI Model Preview
 
 ComfyUI 模型下拉框缩略图预览插件，版本 `1.0.0`。
+<img width="583" height="413" alt="image" src="https://github.com/user-attachments/assets/e9fa5d93-4ab1-46aa-bc17-532f8ca64afb" />
+毫秒级加载（用过以前类似的，卡手生涩），你在Windows右键弹出子菜单速度有多快它就有多快（comfyui右键菜单还要手动点击一下才弹出来真是见鬼的设计）
+按住分类拖拽排序
+记得打开<img width="437" height="151" alt="image" src="https://github.com/user-attachments/assets/f8ddbb96-2ccc-4d6a-9261-0d27049f953b" />
+<img width="630" height="480" alt="QQ20261023-222431-HD" src="https://github.com/user-attachments/assets/0a3de771-fb87-43d7-89d8-b7f4a969c607" />
 
 ## 功能
 
