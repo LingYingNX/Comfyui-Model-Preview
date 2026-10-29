@@ -2,14 +2,19 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const FOLDER_PATTERNS = [
-  [/^ckpt(?:_name)?\d*$/, "checkpoints"],
-  [/^checkpoint(?:_name)?\d*$/, "checkpoints"],
-  [/^lora(?:_name)?\d*$/, "loras"],
-  [/^vae(?:_name)?\d*$/, "vae"],
-  [/^control_net(?:_name)?\d*$/, "controlnet"],
-  [/^(?:unet|diffusion_model)(?:_name)?\d*$/, "diffusion_models"],
-  [/^(?:clip|text_encoder)(?:_name)?\d*$/, "text_encoders"],
-  [/^upscale_model(?:_name)?\d*$/, "upscale_models"],
+  [/^(?:ckpt|checkpoint)(?:_?\d+)?(?:_?(?:name|model_name)(?:_?\d+)?)?$/, "checkpoints"],
+  [/^lora(?:_?\d+)?(?:_?(?:name|model_name)(?:_?\d+)?)?$/, "loras"],
+  [/^vae(?:_?\d+)?(?:_?(?:name|model_name)(?:_?\d+)?)?$/, "vae"],
+  [/^control_net(?:_?\d+)?(?:_?(?:name|model_name)(?:_?\d+)?)?$/, "controlnet"],
+  [
+    /^(?:unet|diffusion_model)(?:_?\d+)?(?:_?(?:name|model_name)(?:_?\d+)?)?$/,
+    "diffusion_models",
+  ],
+  [
+    /^(?:clip|text_encoder)(?:_?\d+)?(?:_?(?:name|model_name)(?:_?\d+)?)?$/,
+    "text_encoders",
+  ],
+  [/^upscale_model(?:_?\d+)?(?:_?(?:name|model_name)(?:_?\d+)?)?$/, "upscale_models"],
 ];
 
 const HOVER_DELAY_MS = 16;
@@ -51,7 +56,7 @@ let legacyClosedWidget;
 let legacyClosedAt = 0;
 
 function widgetFolder(widgetName) {
-  const normalized = widgetName.toLowerCase();
+  const normalized = widgetName.toLowerCase().replace(/[\s-]+/g, "_");
   return FOLDER_PATTERNS.find(([pattern]) => pattern.test(normalized))?.[1] ?? null;
 }
 
@@ -344,18 +349,26 @@ function createLegacyMenu() {
     items: [],
     expanded: new Set(),
     activeIndex: -1,
+    query: "",
+    scrolledToSelection: false,
     visible: false,
     renderFrame: 0,
   };
 
   menu.addEventListener("mousedown", (event) => {
-    if (event.target !== input) event.preventDefault();
+    if (event.target !== input && !event.target.closest?.(".cvmp-legacy-heading")) {
+      event.preventDefault();
+    }
   });
   menu.addEventListener("keydown", onLegacyMenuKeyDown);
   menu.addEventListener("keyup", (event) => event.stopPropagation());
   menu.addEventListener("click", onLegacyMenuClick);
   menu.addEventListener("pointerover", onLegacyMenuPointerOver);
   menu.addEventListener("pointerout", onLegacyMenuPointerOut);
+  menu.addEventListener("dragstart", onLegacyMenuDragStart);
+  menu.addEventListener("dragover", onLegacyMenuDragOver);
+  menu.addEventListener("drop", onLegacyMenuDrop);
+  menu.addEventListener("dragend", onLegacyMenuDragEnd);
   input.addEventListener("input", () => renderLegacyMenu());
 
   return state;
@@ -384,6 +397,8 @@ function closeLegacyMenu(recordWidget = false) {
   legacyMenu.items = [];
   legacyMenu.expanded.clear();
   legacyMenu.activeIndex = -1;
+  legacyMenu.query = "";
+  legacyMenu.scrolledToSelection = false;
   legacyMenu.widget = null;
   legacyMenu.node = null;
   legacyMenu.folder = null;
@@ -432,6 +447,8 @@ function openLegacyModelMenu(widget, node, event) {
   state.menu.dataset.visible = "true";
   state.menu.setAttribute("aria-hidden", "false");
   state.input.value = "";
+  state.query = "";
+  state.scrolledToSelection = false;
   renderLegacyMenu();
   positionLegacyMenu(event);
   state.input.focus({ preventScroll: true });
@@ -487,6 +504,8 @@ function renderLegacyMenu() {
   const { widget, node, folder, input, list, empty } = legacyMenu;
   const query = input.value.trim().toLowerCase();
   const searching = Boolean(query);
+  const preserveScroll = legacyMenu.query === query;
+  const scrollTop = list.scrollTop;
   const selectedName = typeof widget.value === "string" ? widget.value : "";
   const modelNames = widgetModelNames(widget, node).filter(
     (name) => !query || name.toLowerCase().includes(query),
@@ -516,8 +535,11 @@ function renderLegacyMenu() {
     heading.type = "button";
     heading.className = "cvmp-legacy-heading";
     heading.dataset.category = category;
+    heading.draggable = !searching;
     heading.setAttribute("aria-expanded", String(expanded));
-    heading.title = searching ? "搜索时自动展开" : expanded ? "收起分类" : "展开分类";
+    heading.title = searching
+      ? "搜索时自动展开"
+      : `${expanded ? "收起分类" : "展开分类"}；拖拽排序`;
     const arrow = makeIcon("cvmp-legacy-arrow icon-[lucide--chevron-right]");
     const label = document.createElement("span");
     label.className = "cvmp-legacy-label";
@@ -556,13 +578,16 @@ function renderLegacyMenu() {
   }
 
   list.replaceChildren(fragment);
+  list.scrollTop = preserveScroll ? scrollTop : 0;
+  legacyMenu.query = query;
   empty.hidden = modelNames.length > 0;
   const selectedIndex = legacyMenu.items.findIndex(
     (item) => item.dataset.model === selectedName,
   );
   setLegacyActive(selectedIndex >= 0 ? selectedIndex : 0, false);
 
-  if (selectedIndex >= 0) {
+  if (selectedIndex >= 0 && !legacyMenu.scrolledToSelection) {
+    legacyMenu.scrolledToSelection = true;
     cancelAnimationFrame(legacyMenu.renderFrame);
     legacyMenu.renderFrame = requestAnimationFrame(() => {
       legacyMenu?.items[selectedIndex]?.scrollIntoView({ block: "nearest" });
@@ -670,6 +695,86 @@ function onLegacyMenuPointerOut(event) {
   if (!item) return;
   if (event.relatedTarget instanceof Node && item.contains(event.relatedTarget)) return;
   scheduleHide();
+}
+
+function clearLegacyDropIndicators() {
+  for (const heading of legacyMenu?.menu.querySelectorAll(
+    ".is-drop-before, .is-drop-after",
+  ) ?? []) {
+    heading.classList.remove("is-drop-before", "is-drop-after");
+  }
+}
+
+function onLegacyMenuDragStart(event) {
+  const heading = event.target.closest?.(".cvmp-legacy-heading");
+  if (!heading) return;
+  if (!heading.draggable) {
+    event.preventDefault();
+    return;
+  }
+  draggedCategory = {
+    kind: "legacy",
+    category: heading.dataset.category,
+  };
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", heading.dataset.category);
+  requestAnimationFrame(() => heading.classList.add("is-dragging"));
+}
+
+function onLegacyMenuDragOver(event) {
+  const heading = event.target.closest?.(".cvmp-legacy-heading");
+  if (
+    draggedCategory?.kind !== "legacy"
+    || !heading
+    || !heading.draggable
+    || heading.dataset.category === draggedCategory.category
+  ) {
+    return;
+  }
+
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  const rect = heading.getBoundingClientRect();
+  const before = event.clientY < rect.top + rect.height / 2;
+  clearLegacyDropIndicators();
+  heading.classList.add(before ? "is-drop-before" : "is-drop-after");
+}
+
+function onLegacyMenuDrop(event) {
+  const target = event.target.closest?.(".cvmp-legacy-heading");
+  if (
+    draggedCategory?.kind !== "legacy"
+    || !target
+    || !target.draggable
+    || target.dataset.category === draggedCategory.category
+  ) {
+    return;
+  }
+
+  event.preventDefault();
+  const before = target.classList.contains("is-drop-before");
+  const order = [...legacyMenu.menu.querySelectorAll(".cvmp-legacy-heading")].map(
+    (heading) => heading.dataset.category,
+  );
+  const sourceIndex = order.indexOf(draggedCategory.category);
+  if (sourceIndex < 0) return;
+  order.splice(sourceIndex, 1);
+  let targetIndex = order.indexOf(target.dataset.category);
+  if (!before) targetIndex += 1;
+  order.splice(Math.max(0, targetIndex), 0, draggedCategory.category);
+
+  saveCategoryOrder(legacyMenu.folder, order);
+  clearLegacyDropIndicators();
+  renderLegacyMenu();
+}
+
+function onLegacyMenuDragEnd() {
+  if (draggedCategory?.kind !== "legacy") return;
+  clearLegacyDropIndicators();
+  for (const heading of legacyMenu?.menu.querySelectorAll(".is-dragging") ?? []) {
+    heading.classList.remove("is-dragging");
+  }
+  draggedCategory = null;
 }
 
 function patchLegacyModelWidgets(node) {
