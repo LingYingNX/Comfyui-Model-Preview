@@ -10,7 +10,7 @@ from server import PromptServer
 
 
 WEB_DIRECTORY = "./web"
-__version__ = "1.0.0"
+__version__ = "1.1"
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}

@@ -19,6 +19,9 @@ const PREFETCH_COUNT = 8;
 const PREFETCH_RADIUS = 2;
 const UNCATEGORIZED = "未分类";
 const CATEGORY_STORAGE_PREFIX = "cvmp.categoryOrder.v1";
+const EXPANDED_STORAGE_PREFIX = "cvmp.expandedCategories.v1";
+const LEGACY_MENU_MARGIN = 8;
+const LEGACY_REOPEN_GUARD_MS = 250;
 
 let hoverTimer;
 let hideTimer;
@@ -37,11 +40,15 @@ const previews = new Map();
 const listboxFolders = new WeakMap();
 const prefetchedListboxes = new WeakSet();
 const categoryContexts = new WeakMap();
+const patchedLegacyWidgets = new WeakSet();
 const categoryCollator = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: "base",
 });
 let draggedCategory = null;
+let legacyMenu;
+let legacyClosedWidget;
+let legacyClosedAt = 0;
 
 function widgetFolder(widgetName) {
   const normalized = widgetName.toLowerCase();
@@ -120,11 +127,39 @@ function optionName(option) {
   return option.getAttribute("textvalue") ?? option.textContent?.trim() ?? "";
 }
 
+function getWidgetForListbox(listbox) {
+  const trigger = getTrigger(listbox);
+  return trigger ? getWidget(trigger) : null;
+}
+
+function widgetModelNames(widget, node) {
+  let values = widget?.options?.values;
+  if (typeof values === "function") values = values(widget, node);
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.filter((value) => typeof value === "string" && value))];
+}
+
+function getModelNames(listbox) {
+  const trigger = getTrigger(listbox);
+  const widget = trigger ? getWidget(trigger) : null;
+  const node = trigger ? getTriggerNode(trigger) : null;
+  const names = widgetModelNames(widget, node);
+  if (!names.length) return getOptions(listbox).map(optionName).filter(Boolean);
+  return [...new Set(names)];
+}
+
+function selectedModelName(listbox, widget, options) {
+  const selectedOption = options.find(
+    (option) => option.getAttribute("aria-selected") === "true",
+  );
+  if (selectedOption) return optionName(selectedOption);
+  return typeof widget?.value === "string" ? widget.value : null;
+}
+
 function getListboxFolder(listbox) {
   if (listboxFolders.has(listbox)) return listboxFolders.get(listbox);
 
-  const trigger = getTrigger(listbox);
-  const widget = trigger ? getWidget(trigger) : null;
+  const widget = getWidgetForListbox(listbox);
   const folder = widget?.name ? widgetFolder(widget.name) : null;
   if (folder) listboxFolders.set(listbox, folder);
   return folder;
@@ -163,6 +198,31 @@ function saveCategoryOrder(folder, order) {
   }
 }
 
+function expandedStorageKey(folder) {
+  return `${EXPANDED_STORAGE_PREFIX}.${folder}`;
+}
+
+function loadExpandedCategories(folder) {
+  try {
+    const raw = localStorage.getItem(expandedStorageKey(folder));
+    if (raw === null) return null;
+    const value = JSON.parse(raw);
+    return new Set(
+      Array.isArray(value) ? value.filter((item) => typeof item === "string") : [],
+    );
+  } catch {
+    return null;
+  }
+}
+
+function saveExpandedCategories(folder, expanded) {
+  try {
+    localStorage.setItem(expandedStorageKey(folder), JSON.stringify([...expanded]));
+  } catch {
+    // Storage can be unavailable in private or embedded browser contexts.
+  }
+}
+
 function orderedCategories(categories, savedOrder) {
   const ranks = new Map(savedOrder.map((category, index) => [category, index]));
   return [...categories].sort((left, right) => {
@@ -188,6 +248,456 @@ function findSourceOption(listbox, modelName) {
   return getOptions(listbox).find((option) => optionName(option) === modelName) ?? null;
 }
 
+function applyWidgetValue(widget, node, modelName, event) {
+  if (!widget || !modelName || widget.value === modelName) return;
+
+  if (typeof widget.setValue === "function") {
+    widget.setValue(modelName, { e: event, node, canvas: app.canvas });
+  } else {
+    const previous = widget.value;
+    widget.value = modelName;
+    try {
+      widget.callback?.call(widget, modelName, app.canvas, node);
+      node?.onWidgetChanged?.(widget.name, modelName, previous, widget);
+    } finally {
+      app.graph?.setDirtyCanvas?.(true, true);
+      app.graph?.change?.();
+    }
+  }
+
+  const tracker = app.extensionManager?.workflow?.activeWorkflow?.changeTracker;
+  (tracker?.captureCanvasState ?? tracker?.checkState)?.call(tracker);
+}
+
+function selectModel(listbox, modelName) {
+  if (!modelName) return;
+
+  const option = findSourceOption(listbox, modelName);
+  if (option) {
+    option.click();
+    return;
+  }
+
+  const trigger = getTrigger(listbox);
+  const widget = trigger ? getWidget(trigger) : null;
+  const node = trigger ? getTriggerNode(trigger) : null;
+  if (!widget) return;
+
+  try {
+    applyWidgetValue(widget, node, modelName);
+  } finally {
+    listbox
+      .querySelector('[data-testid="widget-select-default-search-input"]')
+      ?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          code: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    hideCard();
+  }
+}
+
+function createLegacyMenu() {
+  const menu = document.createElement("div");
+  menu.className = "cvmp-legacy-menu";
+  menu.setAttribute("role", "dialog");
+  menu.setAttribute("aria-label", "选择模型");
+  menu.setAttribute("aria-hidden", "true");
+
+  const search = document.createElement("label");
+  search.className = "cvmp-legacy-search";
+  search.append(makeIcon("icon-[lucide--search]"));
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.placeholder = "搜索模型";
+  input.setAttribute("aria-label", "搜索模型");
+  search.append(input);
+
+  const list = document.createElement("div");
+  list.className = "cvmp-legacy-list";
+  list.setAttribute("role", "listbox");
+  list.setAttribute("aria-label", "模型列表");
+
+  const empty = document.createElement("div");
+  empty.className = "cvmp-legacy-empty";
+  empty.textContent = "没有匹配的模型";
+  empty.hidden = true;
+
+  menu.append(search, list, empty);
+  document.body.append(menu);
+
+  const state = {
+    menu,
+    input,
+    list,
+    empty,
+    widget: null,
+    node: null,
+    folder: null,
+    event: null,
+    items: [],
+    expanded: new Set(),
+    activeIndex: -1,
+    visible: false,
+    renderFrame: 0,
+  };
+
+  menu.addEventListener("mousedown", (event) => {
+    if (event.target !== input) event.preventDefault();
+  });
+  menu.addEventListener("keydown", onLegacyMenuKeyDown);
+  menu.addEventListener("keyup", (event) => event.stopPropagation());
+  menu.addEventListener("click", onLegacyMenuClick);
+  menu.addEventListener("pointerover", onLegacyMenuPointerOver);
+  menu.addEventListener("pointerout", onLegacyMenuPointerOut);
+  input.addEventListener("input", () => renderLegacyMenu());
+
+  return state;
+}
+
+function ensureLegacyMenu() {
+  legacyMenu ??= createLegacyMenu();
+  return legacyMenu;
+}
+
+function closeLegacyMenu(recordWidget = false) {
+  if (!legacyMenu?.visible) return;
+  if (recordWidget === true) {
+    legacyClosedWidget = legacyMenu.widget;
+    legacyClosedAt = performance.now();
+  }
+
+  cancelAnimationFrame(legacyMenu.renderFrame);
+  legacyMenu.visible = false;
+  legacyMenu.menu.dataset.visible = "false";
+  legacyMenu.menu.setAttribute("aria-hidden", "true");
+  legacyMenu.input.blur();
+  legacyMenu.input.value = "";
+  legacyMenu.list.replaceChildren();
+  legacyMenu.empty.hidden = true;
+  legacyMenu.items = [];
+  legacyMenu.expanded.clear();
+  legacyMenu.activeIndex = -1;
+  legacyMenu.widget = null;
+  legacyMenu.node = null;
+  legacyMenu.folder = null;
+  legacyMenu.event = null;
+  document.removeEventListener("pointerdown", onLegacyMenuOutside, true);
+  document.removeEventListener("focusin", onLegacyMenuOutside, true);
+  window.removeEventListener("resize", closeLegacyMenu);
+  window.removeEventListener("blur", closeLegacyMenu);
+  hideCard();
+}
+
+function onLegacyMenuOutside(event) {
+  if (legacyMenu?.menu.contains(event.target)) return;
+  closeLegacyMenu(true);
+}
+
+function openLegacyModelMenu(widget, node, event) {
+  if (!widget || !node || !widgetModelNames(widget, node).length) return false;
+
+  if (legacyMenu?.visible) {
+    if (legacyMenu.widget === widget) {
+      closeLegacyMenu();
+      return true;
+    }
+    closeLegacyMenu();
+  }
+
+  if (
+    legacyClosedWidget === widget
+    && performance.now() - legacyClosedAt < LEGACY_REOPEN_GUARD_MS
+  ) {
+    legacyClosedWidget = undefined;
+    return true;
+  }
+  legacyClosedWidget = undefined;
+
+  const state = ensureLegacyMenu();
+  state.widget = widget;
+  state.node = node;
+  state.folder = widgetFolder(widget.name);
+  state.event = event;
+  state.expanded = loadExpandedCategories(state.folder) ?? new Set(
+    widgetModelNames(widget, node).map((name) => splitModelName(name).category),
+  );
+  state.visible = true;
+  state.menu.dataset.visible = "true";
+  state.menu.setAttribute("aria-hidden", "false");
+  state.input.value = "";
+  renderLegacyMenu();
+  positionLegacyMenu(event);
+  state.input.focus({ preventScroll: true });
+
+  document.addEventListener("pointerdown", onLegacyMenuOutside, true);
+  document.addEventListener("focusin", onLegacyMenuOutside, true);
+  window.addEventListener("resize", closeLegacyMenu);
+  window.addEventListener("blur", closeLegacyMenu);
+  return true;
+}
+
+function positionLegacyMenu(event) {
+  if (!legacyMenu?.visible) return;
+  const { menu, node, widget } = legacyMenu;
+  const rect = menu.getBoundingClientRect();
+  const mouse = app.canvas?.last_mouse ?? [0, 0];
+  const pointerX = Number.isFinite(event?.clientX) ? event.clientX : mouse[0];
+  const pointerY = Number.isFinite(event?.clientY) ? event.clientY : mouse[1];
+  const canvasElement = app.canvas?.canvas;
+  const scale = app.canvas?.ds?.scale ?? 1;
+  const offset = app.canvas?.ds?.offset;
+  const canvasRect = canvasElement?.getBoundingClientRect();
+  const canAlignToWidget = Boolean(canvasRect && offset && node?.pos);
+  const widgetLeft = canAlignToWidget
+    ? canvasRect.left + (node.pos[0] + offset[0]) * scale + 8 * scale
+    : pointerX - 12;
+  const widgetTop = canAlignToWidget ? canvasRect.top + (node.pos[1] + offset[1]) * scale : pointerY;
+  const widgetHeight = (widget?.height ?? 20) * scale;
+  const widgetBottom = widgetTop + (widget?.y ?? 0) * scale + widgetHeight;
+  const widgetRight = widgetLeft + Math.max(120, (node?.size?.[0] ?? 180) * scale - 16);
+  let left = widgetLeft;
+  let top = widgetBottom + 4;
+
+  if (left + rect.width > window.innerWidth - LEGACY_MENU_MARGIN) {
+    left = widgetRight - rect.width;
+  }
+  if (top + rect.height > window.innerHeight - LEGACY_MENU_MARGIN) {
+    top = widgetTop + (widget?.y ?? 0) * scale - rect.height - 4;
+  }
+
+  menu.style.left = `${Math.max(
+    LEGACY_MENU_MARGIN,
+    Math.min(left, window.innerWidth - rect.width - LEGACY_MENU_MARGIN),
+  )}px`;
+  menu.style.top = `${Math.max(
+    LEGACY_MENU_MARGIN,
+    Math.min(top, window.innerHeight - rect.height - LEGACY_MENU_MARGIN),
+  )}px`;
+}
+
+function renderLegacyMenu() {
+  if (!legacyMenu?.visible || !legacyMenu.widget) return;
+  const { widget, node, folder, input, list, empty } = legacyMenu;
+  const query = input.value.trim().toLowerCase();
+  const searching = Boolean(query);
+  const selectedName = typeof widget.value === "string" ? widget.value : "";
+  const modelNames = widgetModelNames(widget, node).filter(
+    (name) => !query || name.toLowerCase().includes(query),
+  );
+  const groups = new Map();
+
+  for (const name of modelNames) {
+    const { category, filename } = splitModelName(name);
+    const group = groups.get(category) ?? [];
+    group.push({ filename, name });
+    groups.set(category, group);
+  }
+
+  const categories = orderedCategories(groups.keys(), loadCategoryOrder(folder));
+  const fragment = document.createDocumentFragment();
+  legacyMenu.items = [];
+
+  for (const category of categories) {
+    const models = groups.get(category);
+    const expanded = searching || legacyMenu.expanded.has(category);
+    const group = document.createElement("section");
+    group.className = "cvmp-legacy-group";
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", category);
+
+    const heading = document.createElement("button");
+    heading.type = "button";
+    heading.className = "cvmp-legacy-heading";
+    heading.dataset.category = category;
+    heading.setAttribute("aria-expanded", String(expanded));
+    heading.title = searching ? "搜索时自动展开" : expanded ? "收起分类" : "展开分类";
+    const arrow = makeIcon("cvmp-legacy-arrow icon-[lucide--chevron-right]");
+    const label = document.createElement("span");
+    label.className = "cvmp-legacy-label";
+    label.textContent = category;
+    const count = document.createElement("span");
+    count.className = "cvmp-legacy-count";
+    count.textContent = String(models.length);
+    heading.append(arrow, label, count);
+    group.append(heading);
+
+    if (!expanded) {
+      fragment.append(group);
+      continue;
+    }
+
+    for (const model of models) {
+      const selected = model.name === selectedName;
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "cvmp-legacy-item";
+      item.dataset.model = model.name;
+      item.title = model.name;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(selected));
+      if (selected) item.classList.add("is-selected");
+
+      const name = document.createElement("span");
+      name.className = "cvmp-legacy-name";
+      name.textContent = model.filename;
+      item.append(name);
+      if (selected) item.append(makeIcon("cvmp-model-check icon-[lucide--check]"));
+      group.append(item);
+      legacyMenu.items.push(item);
+    }
+    fragment.append(group);
+  }
+
+  list.replaceChildren(fragment);
+  empty.hidden = modelNames.length > 0;
+  const selectedIndex = legacyMenu.items.findIndex(
+    (item) => item.dataset.model === selectedName,
+  );
+  setLegacyActive(selectedIndex >= 0 ? selectedIndex : 0, false);
+
+  if (selectedIndex >= 0) {
+    cancelAnimationFrame(legacyMenu.renderFrame);
+    legacyMenu.renderFrame = requestAnimationFrame(() => {
+      legacyMenu?.items[selectedIndex]?.scrollIntoView({ block: "nearest" });
+    });
+  }
+}
+
+function setLegacyActive(index, scroll = true) {
+  if (!legacyMenu?.items.length) {
+    if (legacyMenu) legacyMenu.activeIndex = -1;
+    return;
+  }
+  const next = Math.max(0, Math.min(index, legacyMenu.items.length - 1));
+  legacyMenu.items[legacyMenu.activeIndex]?.classList.remove("is-active");
+  legacyMenu.activeIndex = next;
+  const item = legacyMenu.items[next];
+  item.classList.add("is-active");
+  if (scroll) item.scrollIntoView({ block: "nearest" });
+}
+
+function selectLegacyModel(modelName) {
+  if (!legacyMenu?.widget || !modelName) return;
+  const { widget, node, event } = legacyMenu;
+  try {
+    applyWidgetValue(widget, node, modelName, event);
+  } finally {
+    closeLegacyMenu();
+  }
+}
+
+function onLegacyMenuClick(event) {
+  const heading = event.target.closest?.(".cvmp-legacy-heading");
+  if (heading) {
+    event.preventDefault();
+    if (legacyMenu.input.value.trim()) return;
+    const category = heading.dataset.category;
+    if (!category) return;
+    if (legacyMenu.expanded.has(category)) {
+      legacyMenu.expanded.delete(category);
+    } else {
+      legacyMenu.expanded.add(category);
+    }
+    saveExpandedCategories(legacyMenu.folder, legacyMenu.expanded);
+    clearTimeout(hoverTimer);
+    hideCard();
+    renderLegacyMenu();
+    return;
+  }
+
+  const item = event.target.closest?.(".cvmp-legacy-item");
+  if (!item) return;
+  event.preventDefault();
+  selectLegacyModel(item.dataset.model);
+}
+
+function onLegacyMenuKeyDown(event) {
+  event.stopPropagation();
+  if (event.isComposing) return;
+
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeLegacyMenu();
+    return;
+  }
+
+  const moves = { ArrowDown: 1, ArrowUp: -1, PageDown: 10, PageUp: -10 };
+  const move = moves[event.key];
+  if (move) {
+    event.preventDefault();
+    setLegacyActive((legacyMenu?.activeIndex ?? 0) + move);
+    return;
+  }
+
+  if (event.key === "Enter") {
+    const item = legacyMenu?.items[legacyMenu.activeIndex];
+    if (!item) return;
+    event.preventDefault();
+    selectLegacyModel(item.dataset.model);
+  }
+}
+
+function onLegacyMenuPointerOver(event) {
+  const item = event.target.closest?.(".cvmp-legacy-item");
+  if (!item || !legacyMenu?.visible) return;
+  clearTimeout(hoverTimer);
+  clearTimeout(hideTimer);
+  activeListbox = legacyMenu.menu;
+  activeOption = item;
+  const token = ++hoverToken;
+  const index = legacyMenu.items.indexOf(item);
+  if (index >= 0) setLegacyActive(index, false);
+  hoverTimer = setTimeout(() => {
+    showModelPreview(
+      item.dataset.model,
+      legacyMenu?.folder,
+      legacyMenu?.menu,
+      token,
+      item,
+    );
+  }, HOVER_DELAY_MS);
+}
+
+function onLegacyMenuPointerOut(event) {
+  const item = event.target.closest?.(".cvmp-legacy-item");
+  if (!item) return;
+  if (event.relatedTarget instanceof Node && item.contains(event.relatedTarget)) return;
+  scheduleHide();
+}
+
+function patchLegacyModelWidgets(node) {
+  for (const widget of node?.widgets ?? []) {
+    if (
+      widget?.type !== "combo"
+      || !widgetFolder(widget.name)
+      || patchedLegacyWidgets.has(widget)
+    ) {
+      continue;
+    }
+
+    const originalOnClick = widget.onClick;
+    widget.onClick = function onLegacyModelClick(args) {
+      if (window.LiteGraph?.vueNodesMode) {
+        return originalOnClick?.call(this, args);
+      }
+      const handled = openLegacyModelMenu(this, node, args?.e);
+      if (!handled) return originalOnClick?.call(this, args);
+    };
+    patchedLegacyWidgets.add(widget);
+  }
+}
+
+function patchAllLegacyModelWidgets() {
+  for (const node of app.graph?._nodes ?? []) patchLegacyModelWidgets(node);
+}
+
 function clearDropIndicators(tree) {
   for (const element of tree.querySelectorAll(
     ".cvmp-category.is-drop-before, .cvmp-category.is-drop-after",
@@ -204,28 +714,26 @@ function renderListboxTree(listbox) {
   const searchInput = listbox.querySelector(
     '[data-testid="widget-select-default-search-input"]',
   );
-  const searching = Boolean(searchInput?.value.trim());
+  const query = searchInput?.value.trim().toLowerCase() ?? "";
+  const searching = Boolean(query);
+  const widget = getWidgetForListbox(listbox);
   const options = getOptions(listbox);
+  const selectedName = selectedModelName(listbox, widget, options);
+  const modelNames = getModelNames(listbox).filter(
+    (name) => !searching || name.toLowerCase().includes(query),
+  );
   const groups = new Map();
-  const selectedName = options.find(
-    (option) => option.getAttribute("aria-selected") === "true",
-  )?.getAttribute("textvalue");
 
-  for (const option of options) {
-    const name = optionName(option);
-    if (!name) continue;
+  for (const name of modelNames) {
     const { category, filename } = splitModelName(name);
     const group = groups.get(category) ?? [];
-    group.push({ filename, name, option });
+    group.push({ filename, name });
     groups.set(category, group);
   }
 
   if (!state.initialized) {
-    const selected = options.find(
-      (option) => option.getAttribute("aria-selected") === "true",
-    );
-    if (selected) {
-      state.expanded.add(splitModelName(optionName(selected)).category);
+    if (selectedName) {
+      state.expanded.add(splitModelName(selectedName).category);
     }
     state.initialized = true;
   }
@@ -247,9 +755,7 @@ function renderListboxTree(listbox) {
   for (const category of categories) {
     const models = groups.get(category);
     const expanded = searching || state.expanded.has(category);
-    const selectedInGroup = models.some(
-      (model) => model.option.getAttribute("aria-selected") === "true",
-    );
+    const selectedInGroup = models.some((model) => model.name === selectedName);
 
     const group = document.createElement("section");
     group.className = "cvmp-category-group";
@@ -279,7 +785,7 @@ function renderListboxTree(listbox) {
       items.className = "cvmp-category-items";
       items.setAttribute("role", "group");
       for (const model of models) {
-        const selected = model.option.getAttribute("aria-selected") === "true";
+        const selected = model.name === selectedName;
         const item = document.createElement("button");
         item.type = "button";
         item.className = "cvmp-model-item";
@@ -339,16 +845,15 @@ function onTreeClick(event) {
     } else {
       context.state.expanded.add(category);
     }
+    saveExpandedCategories(context.folder, context.state.expanded);
     renderListboxTree(listbox);
     return;
   }
 
   const item = event.target.closest?.(".cvmp-model-item");
   if (!item) return;
-  const option = findSourceOption(listbox, item.dataset.model);
-  if (!option) return;
   event.preventDefault();
-  option.click();
+  selectModel(listbox, item.dataset.model);
 }
 
 function onTreeDragStart(event) {
@@ -431,7 +936,7 @@ function ensureCategorizedListbox(listbox) {
     '[data-testid="widget-select-default-viewport"]',
   );
   const folder = getListboxFolder(listbox);
-  if (!source || !folder || !getOptions(listbox).length) return;
+  if (!source || !folder || !getModelNames(listbox).length) return;
 
   const tree = document.createElement("div");
   tree.className = "cvmp-tree";
@@ -439,13 +944,14 @@ function ensureCategorizedListbox(listbox) {
   source.after(tree);
   source.classList.add("cvmp-category-source");
 
+  const savedExpanded = loadExpandedCategories(folder);
   const context = {
     folder,
     source,
     tree,
     state: {
-      expanded: new Set(),
-      initialized: false,
+      expanded: savedExpanded ?? new Set(),
+      initialized: savedExpanded !== null,
       highlightedCategory: null,
       order: loadCategoryOrder(folder),
       scrolledToSelection: false,
@@ -473,9 +979,8 @@ function ensureCategorizedListbox(listbox) {
   renderListboxTree(listbox);
 }
 
-function prefetchOption(option, listbox) {
+function prefetchOption(modelName, listbox) {
   const folder = getListboxFolder(listbox);
-  const modelName = optionName(option);
   if (!folder || !modelName) return;
 
   resolveModel(folder, modelName).then((model) => {
@@ -483,15 +988,15 @@ function prefetchOption(option, listbox) {
   });
 }
 
-function prefetchAround(option, listbox) {
-  const options = getOptions(listbox);
-  const index = options.indexOf(option);
+function prefetchAround(modelName, listbox) {
+  const modelNames = getModelNames(listbox);
+  const index = modelNames.indexOf(modelName);
   if (index < 0) return;
 
   const start = Math.max(0, index - PREFETCH_RADIUS);
-  const end = Math.min(options.length, index + PREFETCH_RADIUS + 1);
+  const end = Math.min(modelNames.length, index + PREFETCH_RADIUS + 1);
   for (let current = start; current < end; current += 1) {
-    prefetchOption(options[current], listbox);
+    prefetchOption(modelNames[current], listbox);
   }
 }
 
@@ -503,12 +1008,12 @@ function prefetchOpenListboxes() {
     if (listbox.getBoundingClientRect().width === 0) continue;
     ensureCategorizedListbox(listbox);
     if (prefetchedListboxes.has(listbox)) continue;
-    const options = getOptions(listbox);
-    if (!options.length || !getListboxFolder(listbox)) continue;
+    const modelNames = getModelNames(listbox);
+    if (!modelNames.length || !getListboxFolder(listbox)) continue;
 
     prefetchedListboxes.add(listbox);
-    for (const option of options.slice(0, PREFETCH_COUNT)) {
-      prefetchOption(option, listbox);
+    for (const modelName of modelNames.slice(0, PREFETCH_COUNT)) {
+      prefetchOption(modelName, listbox);
     }
   }
 }
@@ -611,26 +1116,35 @@ function getTrigger(listbox) {
 }
 
 function getWidget(trigger) {
-  const nodeElement = trigger.closest("[node-id]");
-  const nodeId = nodeElement?.getAttribute("node-id");
-  if (!nodeElement || !nodeId) return null;
-
-  const node = app.graph?.getNodeById?.(Number.isNaN(Number(nodeId)) ? nodeId : Number(nodeId));
+  const node = getTriggerNode(trigger);
   if (!node?.widgets) return null;
 
+  const nodeElement = trigger.closest("[data-node-id], [node-id]");
   const triggers = [...nodeElement.querySelectorAll('button[role="combobox"]')];
   const triggerIndex = triggers.indexOf(trigger);
   const combos = node.widgets.filter((widget) => widget.type === "combo");
   return combos[triggerIndex] ?? null;
 }
 
-async function showPreview(option, listbox, token, anchor = option) {
-  const trigger = getTrigger(listbox);
-  const widget = trigger ? getWidget(trigger) : null;
-  const folder = widget?.name ? widgetFolder(widget.name) : null;
-  const modelName = optionName(option);
-  if (!folder || !modelName) return;
+function getTriggerNode(trigger) {
+  const nodeElement = trigger.closest("[data-node-id], [node-id]");
+  const nodeId =
+    nodeElement?.getAttribute("data-node-id")
+    || nodeElement?.getAttribute("node-id");
+  if (!nodeElement || !nodeId) return null;
 
+  const node = app.graph?.getNodeById?.(Number.isNaN(Number(nodeId)) ? nodeId : Number(nodeId));
+  return node ?? null;
+}
+
+async function showPreview(modelName, listbox, token, anchor) {
+  const widget = getWidgetForListbox(listbox);
+  const folder = widget?.name ? widgetFolder(widget.name) : null;
+  await showModelPreview(modelName, folder, listbox, token, anchor);
+}
+
+async function showModelPreview(modelName, folder, listbox, token, anchor) {
+  if (!folder || !modelName || !listbox || !anchor) return;
   const model = await resolveModel(folder, modelName);
   if (!model || token !== hoverToken) return;
 
@@ -655,9 +1169,10 @@ function onPointerOver(event) {
     '[data-testid="widget-select-default-overlay"]',
   );
   const option = item
-    ? findSourceOption(listbox, item.dataset.model)
+    ? null
     : event.target.closest?.('[role="option"]');
-  if (!option || !listbox) return;
+  const modelName = item?.dataset.model ?? (option ? optionName(option) : "");
+  if (!modelName || !listbox) return;
   const anchor = item ?? option;
 
   clearTimeout(hoverTimer);
@@ -665,10 +1180,10 @@ function onPointerOver(event) {
   activeOption = anchor;
   activeListbox = listbox;
   const token = ++hoverToken;
-  prefetchAround(option, listbox);
+  prefetchAround(modelName, listbox);
 
   hoverTimer = setTimeout(() => {
-    showPreview(option, listbox, token, anchor);
+    showPreview(modelName, listbox, token, anchor);
   }, HOVER_DELAY_MS);
 }
 
@@ -709,7 +1224,17 @@ if (!window.__comfyVueModelPreviewInstalled) {
   );
 
   try {
-    app.registerExtension({ name: "ComfyUI.VueModelPreview" });
+    app.registerExtension({
+      name: "ComfyUI.VueModelPreview",
+      setup() {
+        patchAllLegacyModelWidgets();
+        queueMicrotask(patchAllLegacyModelWidgets);
+      },
+      nodeCreated(node) {
+        patchLegacyModelWidgets(node);
+        queueMicrotask(() => patchLegacyModelWidgets(node));
+      },
+    });
   } catch (error) {
     if (!String(error?.message).includes("already registered")) throw error;
   }
