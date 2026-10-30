@@ -1,6 +1,6 @@
 # ComfyUI Model Preview
 
-ComfyUI 模型下拉框缩略图预览插件，版本 `1.1`。
+ComfyUI 模型下拉框缩略图预览插件，版本 `1.1.1`。
 
 <img width="760" height="538" alt="QQ20261023-223036-HD" src="https://github.com/user-attachments/assets/2e57d769-bc99-4c17-bef7-f64f6cfb1a7c" />
 
@@ -22,6 +22,7 @@ ComfyUI 模型下拉框缩略图预览插件，版本 `1.1`。
 - 传统节点画布直接使用 Nodes 2.0 风格模型菜单，无需逐级点击文件夹。
 - 支持键盘导航、点击外部关闭、选中高亮和分类箭头折叠。
 - 兼容常见的第三方索引式控件名，例如 `lora_1_name`、`checkpoint_1_name`。
+- 支持 Easy-Use `easy diffusionModelLoader` 的 `model_name` 扩散模型选择。
 - 直接读取模型旁边的图片，并通过 HTTP 缓存减少重复传输。
 
 支持以下模型目录：
@@ -73,4 +74,4 @@ model.preview.png
 
 ## 版本
 
-当前版本：`1.1`
+当前版本：`1.1.1`

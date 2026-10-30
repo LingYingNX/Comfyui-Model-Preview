@@ -17,6 +17,10 @@ const FOLDER_PATTERNS = [
   [/^upscale_model(?:_?\d+)?(?:_?(?:name|model_name)(?:_?\d+)?)?$/, "upscale_models"],
 ];
 
+const NODE_WIDGET_FOLDERS = new Map([
+  ["easy diffusionModelLoader", { model_name: "diffusion_models" }],
+]);
+
 const HOVER_DELAY_MS = 16;
 const HIDE_DELAY_MS = 80;
 const CARD_GAP_PX = 8;
@@ -55,8 +59,11 @@ let legacyMenu;
 let legacyClosedWidget;
 let legacyClosedAt = 0;
 
-function widgetFolder(widgetName) {
+function widgetFolder(widgetName, node) {
   const normalized = widgetName.toLowerCase().replace(/[\s-]+/g, "_");
+  const nodeClass = node?.comfyClass ?? node?.type;
+  const nodeFolder = NODE_WIDGET_FOLDERS.get(nodeClass)?.[normalized];
+  if (nodeFolder) return nodeFolder;
   return FOLDER_PATTERNS.find(([pattern]) => pattern.test(normalized))?.[1] ?? null;
 }
 
@@ -165,7 +172,9 @@ function getListboxFolder(listbox) {
   if (listboxFolders.has(listbox)) return listboxFolders.get(listbox);
 
   const widget = getWidgetForListbox(listbox);
-  const folder = widget?.name ? widgetFolder(widget.name) : null;
+  const trigger = widget ? getTrigger(listbox) : null;
+  const node = trigger ? getTriggerNode(trigger) : null;
+  const folder = widget?.name ? widgetFolder(widget.name, node) : null;
   if (folder) listboxFolders.set(listbox, folder);
   return folder;
 }
@@ -438,10 +447,11 @@ function openLegacyModelMenu(widget, node, event) {
   const state = ensureLegacyMenu();
   state.widget = widget;
   state.node = node;
-  state.folder = widgetFolder(widget.name);
+  state.folder = widgetFolder(widget.name, node);
   state.event = event;
+  const selectedName = typeof widget.value === "string" ? widget.value : "";
   state.expanded = loadExpandedCategories(state.folder) ?? new Set(
-    widgetModelNames(widget, node).map((name) => splitModelName(name).category),
+    selectedName ? [splitModelName(selectedName).category] : [],
   );
   state.visible = true;
   state.menu.dataset.visible = "true";
@@ -781,7 +791,7 @@ function patchLegacyModelWidgets(node) {
   for (const widget of node?.widgets ?? []) {
     if (
       widget?.type !== "combo"
-      || !widgetFolder(widget.name)
+      || !widgetFolder(widget.name, node)
       || patchedLegacyWidgets.has(widget)
     ) {
       continue;
@@ -1244,7 +1254,9 @@ function getTriggerNode(trigger) {
 
 async function showPreview(modelName, listbox, token, anchor) {
   const widget = getWidgetForListbox(listbox);
-  const folder = widget?.name ? widgetFolder(widget.name) : null;
+  const trigger = widget ? getTrigger(listbox) : null;
+  const node = trigger ? getTriggerNode(trigger) : null;
+  const folder = widget?.name ? widgetFolder(widget.name, node) : null;
   await showModelPreview(modelName, folder, listbox, token, anchor);
 }
 
